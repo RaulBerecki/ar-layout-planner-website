@@ -1,0 +1,19 @@
+# Render blueprint — deploys the whole app as one free web service.
+# In the Render dashboard: New + -> Blueprint -> select this repository.
+services:
+  - type: web
+    name: ar-layout-planner
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
