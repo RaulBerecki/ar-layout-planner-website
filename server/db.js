@@ -57,6 +57,7 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
 
     ALTER TABLE files ADD COLUMN IF NOT EXISTS thumbnail TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_code_hash TEXT;
   `);
 
   const { data: buckets, error } = await supabase.storage.listBuckets();
@@ -71,13 +72,32 @@ export async function initDb() {
   }
 }
 
+// Unambiguous alphabet shared by invite and recovery codes (no 0/O, 1/I)
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function randomCode(length) {
+  return Array.from(crypto.randomBytes(length))
+    .map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length])
+    .join('');
+}
+
+/**
+ * One-time account recovery code, e.g. "K7QP-2MRX-9HTB-4WLN".
+ * 16 characters from a 32-symbol alphabet = 80 bits of entropy.
+ */
+export function generateRecoveryCode() {
+  return (randomCode(16).match(/.{4}/g) || []).join('-');
+}
+
+/** Codes are compared case-insensitively and ignoring dashes/spaces. */
+export function normalizeRecoveryCode(code) {
+  return String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
 export async function generateInviteCode() {
   // 8 chars, unambiguous alphabet (no 0/O, 1/I)
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   for (;;) {
-    const code = Array.from(crypto.randomBytes(8))
-      .map((b) => alphabet[b % alphabet.length])
-      .join('');
+    const code = randomCode(8);
     const { rows } = await pool.query(
       'SELECT 1 FROM organizations WHERE invite_code = $1',
       [code]

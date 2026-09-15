@@ -54,15 +54,37 @@ Then open the URL Vite prints, register an account, and start uploading
 | ------ | ------------------------- | ---- | ------------------------------- |
 | POST   | `/api/register`           | –    | Create account + create/join org, returns JWT |
 | POST   | `/api/login`              | –    | Log in, returns JWT             |
+| POST   | `/api/recover`            | –    | Reset password with recovery code |
 | GET    | `/api/me`                 | ✔    | Current user + organization     |
 | GET    | `/api/org`                | ✔    | Org name, invite code, members  |
 | GET    | `/api/files`              | ✔    | List the org's files            |
 | POST   | `/api/files`              | ✔    | Upload one file (`file` field)  |
-| GET    | `/api/files/:id/download` | ✔    | Download an org file            |
+| GET    | `/api/files/:id/url`      | ✔    | Signed URL for preview/download |
+| POST   | `/api/files/:id/thumbnail`| ✔    | Save a generated thumbnail      |
 | DELETE | `/api/files/:id`          | ✔    | Delete own file                 |
 
 `POST /api/register` body: `{ username, password, orgMode: "create" | "join",
 orgName?, inviteCode? }`.
+
+## Forgotten passwords
+
+Accounts have no email address, so password reset uses a **recovery code**
+instead of a reset link. Registration returns a one-time code (e.g.
+`K7QP-2MRX-9HTB-4WLN`) that is shown once and stored only as a bcrypt hash.
+"Forgot password?" on the login page exchanges that code plus a new password
+for access, and issues a fresh code. `/api/login`, `/api/register` and
+`/api/recover` are rate-limited per IP.
+
+If both the password and the recovery code are lost, the site owner can reset
+any account from a machine that has `server/.env`:
+
+```
+cd server
+node --env-file=.env admin-reset.mjs --list
+node --env-file=.env admin-reset.mjs <username> [newPassword]
+```
+
+It prints a new password (random if omitted) and a new recovery code.
 
 ## Notes
 

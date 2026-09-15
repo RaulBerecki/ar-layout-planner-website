@@ -5,3 +5,4 @@ server/app.db
 server/app.db-shm
 server/app.db-wal
 .env
+server/recovery-codes.txt

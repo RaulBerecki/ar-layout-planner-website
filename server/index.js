@@ -7,7 +7,16 @@ import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { pool, supabase, BUCKET, MAX_FILE_SIZE, initDb, generateInviteCode } from './db.js';
+import {
+  pool,
+  supabase,
+  BUCKET,
+  MAX_FILE_SIZE,
+  initDb,
+  generateInviteCode,
+  generateRecoveryCode,
+  normalizeRecoveryCode,
+} from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +38,40 @@ function validThumbnail(thumbnail) {
 }
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// ---------- Brute-force throttling ----------
+// In-memory counter: enough for a single-instance deployment. A multi-instance
+// setup would need a shared store (Redis) instead.
+const attempts = new Map();
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+
+function throttle(maxAttempts) {
+  return (req, res, next) => {
+    const key = `${req.ip}:${req.path}`;
+    const now = Date.now();
+    const entry = attempts.get(key);
+    if (!entry || now > entry.resetAt) {
+      attempts.set(key, { count: 1, resetAt: now + ATTEMPT_WINDOW_MS });
+      return next();
+    }
+    if (entry.count >= maxAttempts) {
+      const minutes = Math.ceil((entry.resetAt - now) / 60000);
+      return res.status(429).json({
+        error: `Too many attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+      });
+    }
+    entry.count += 1;
+    next();
+  };
+}
+
+// Forget counters for keys whose window has passed
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of attempts) {
+    if (now > entry.resetAt) attempts.delete(key);
+  }
+}, ATTEMPT_WINDOW_MS).unref();
 
 // ---------- Auth ----------
 
@@ -68,7 +111,7 @@ async function requireAuth(req, res, next) {
   }
 }
 
-app.post('/api/register', async (req, res, next) => {
+app.post('/api/register', throttle(20), async (req, res, next) => {
   try {
     const { username, password, orgMode, orgName, inviteCode } = req.body || {};
     if (!username || !password) {
@@ -114,13 +157,21 @@ app.post('/api/register', async (req, res, next) => {
         org = rows[0];
       }
       const hash = bcrypt.hashSync(password, 10);
+      // Shown to the user exactly once; only its hash is kept.
+      const recoveryCode = generateRecoveryCode();
+      const recoveryHash = bcrypt.hashSync(normalizeRecoveryCode(recoveryCode), 10);
       const { rows: userRows } = await client.query(
-        'INSERT INTO users (username, password_hash, org_id) VALUES ($1, $2, $3) RETURNING *',
-        [username.trim(), hash, org.id]
+        `INSERT INTO users (username, password_hash, org_id, recovery_code_hash)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [username.trim(), hash, org.id, recoveryHash]
       );
       await client.query('COMMIT');
       const user = userRows[0];
-      res.status(201).json({ token: signToken(user), user: publicUser(user, org) });
+      res.status(201).json({
+        token: signToken(user),
+        user: publicUser(user, org),
+        recovery_code: recoveryCode,
+      });
     } catch (err) {
       await client.query('ROLLBACK');
       if (err.code === '23505') {
@@ -135,7 +186,7 @@ app.post('/api/register', async (req, res, next) => {
   }
 });
 
-app.post('/api/login', async (req, res, next) => {
+app.post('/api/login', throttle(15), async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
     if (!username || !password) {
@@ -153,6 +204,47 @@ app.post('/api/login', async (req, res, next) => {
       [user.org_id]
     );
     res.json({ token: signToken(user), user: publicUser(user, orgRows[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Password reset with the recovery code issued at registration. The code is
+// single-use: a successful reset replaces it with a fresh one.
+app.post('/api/recover', throttle(10), async (req, res, next) => {
+  try {
+    const { username, recoveryCode, newPassword } = req.body || {};
+    if (!username || !recoveryCode || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: 'Username, recovery code and new password are required' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const { rows } = await pool.query('SELECT * FROM users WHERE username = $1', [
+      username.trim(),
+    ]);
+    const user = rows[0];
+    const supplied = normalizeRecoveryCode(recoveryCode);
+    // One generic message so this cannot be used to discover usernames
+    const invalid = { error: 'Invalid username or recovery code' };
+    if (!user || !user.recovery_code_hash) return res.status(400).json(invalid);
+    if (!bcrypt.compareSync(supplied, user.recovery_code_hash)) {
+      return res.status(400).json(invalid);
+    }
+
+    const nextCode = generateRecoveryCode();
+    await pool.query(
+      'UPDATE users SET password_hash = $1, recovery_code_hash = $2 WHERE id = $3',
+      [
+        bcrypt.hashSync(newPassword, 10),
+        bcrypt.hashSync(normalizeRecoveryCode(nextCode), 10),
+        user.id,
+      ]
+    );
+    res.json({ ok: true, recovery_code: nextCode });
   } catch (err) {
     next(err);
   }

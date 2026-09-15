@@ -52,6 +52,11 @@ export const api = {
     }),
   login: (username, password) =>
     request('/api/login', { method: 'POST', body: { username, password } }),
+  recover: ({ username, recoveryCode, newPassword }) =>
+    request('/api/recover', {
+      method: 'POST',
+      body: { username, recoveryCode, newPassword },
+    }),
   me: () => request('/api/me'),
   getOrg: () => request('/api/org'),
   listFiles: () => request('/api/files'),

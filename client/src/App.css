@@ -176,6 +176,59 @@ body {
   font-size: 0.9rem;
 }
 
+/* ---------- Recovery code ---------- */
+
+.code-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.recovery-code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #7faaff;
+  word-break: break-all;
+}
+
+.code-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 1.25rem;
+}
+
+.code-note strong {
+  color: var(--text);
+}
+
+.full-width {
+  width: 100%;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-family: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0.25rem;
+}
+
+.link-button:hover {
+  color: var(--primary);
+}
+
 /* ---------- Organization ---------- */
 
 .org-section {
