@@ -6,7 +6,7 @@
 //
 // Prints the new password and recovery code once. This is the last resort when
 // both the password and the recovery code are lost.
-import bcrypt from 'bcryptjs';
+import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { pool, initDb, generateRecoveryCode, normalizeRecoveryCode } from './db.js';
 

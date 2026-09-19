@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
-import bcrypt from 'bcryptjs';
+// Native bcrypt: several times faster than bcryptjs and its async calls run off the main thread.
+// It reads the $2a$ hashes created earlier with bcryptjs, so existing passwords keep working.
+import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import path from 'path';
@@ -156,10 +158,10 @@ app.post('/api/register', throttle(20), async (req, res, next) => {
         );
         org = rows[0];
       }
-      const hash = bcrypt.hashSync(password, 10);
+      const hash = await bcrypt.hash(password, 10);
       // Shown to the user exactly once; only its hash is kept.
       const recoveryCode = generateRecoveryCode();
-      const recoveryHash = bcrypt.hashSync(normalizeRecoveryCode(recoveryCode), 10);
+      const recoveryHash = await bcrypt.hash(normalizeRecoveryCode(recoveryCode), 10);
       const { rows: userRows } = await client.query(
         `INSERT INTO users (username, password_hash, org_id, recovery_code_hash)
          VALUES ($1, $2, $3, $4) RETURNING *`,
@@ -192,18 +194,19 @@ app.post('/api/login', throttle(15), async (req, res, next) => {
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
     }
-    const { rows } = await pool.query('SELECT * FROM users WHERE username = $1', [
-      username.trim(),
-    ]);
+    // One round trip: the user and their organization together.
+    const { rows } = await pool.query(
+      `SELECT u.*, o.name AS org_name
+       FROM users u LEFT JOIN organizations o ON o.id = u.org_id
+       WHERE u.username = $1`,
+      [username.trim()]
+    );
     const user = rows[0];
-    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
-    const { rows: orgRows } = await pool.query(
-      'SELECT * FROM organizations WHERE id = $1',
-      [user.org_id]
-    );
-    res.json({ token: signToken(user), user: publicUser(user, orgRows[0]) });
+    const org = user.org_name != null ? { id: user.org_id, name: user.org_name } : null;
+    res.json({ token: signToken(user), user: publicUser(user, org) });
   } catch (err) {
     next(err);
   }
@@ -231,7 +234,7 @@ app.post('/api/recover', throttle(10), async (req, res, next) => {
     // One generic message so this cannot be used to discover usernames
     const invalid = { error: 'Invalid username or recovery code' };
     if (!user || !user.recovery_code_hash) return res.status(400).json(invalid);
-    if (!bcrypt.compareSync(supplied, user.recovery_code_hash)) {
+    if (!(await bcrypt.compare(supplied, user.recovery_code_hash))) {
       return res.status(400).json(invalid);
     }
 
@@ -239,8 +242,8 @@ app.post('/api/recover', throttle(10), async (req, res, next) => {
     await pool.query(
       'UPDATE users SET password_hash = $1, recovery_code_hash = $2 WHERE id = $3',
       [
-        bcrypt.hashSync(newPassword, 10),
-        bcrypt.hashSync(normalizeRecoveryCode(nextCode), 10),
+        await bcrypt.hash(newPassword, 10),
+        await bcrypt.hash(normalizeRecoveryCode(nextCode), 10),
         user.id,
       ]
     );

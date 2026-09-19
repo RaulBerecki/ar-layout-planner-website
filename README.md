@@ -97,3 +97,13 @@ It prints a new password (random if omitted) and a new recovery code.
 - Databases created before organizations existed are migrated automatically:
   a "Default Organization" is created and existing users/files are moved into
   it.
+- Passwords and recovery codes are hashed with the native `bcrypt` package
+  (cost 10), using the async `hash` / `compare` calls so a login never blocks
+  other requests. It replaced `bcryptjs`, whose `$2a$` hashes it still accepts,
+  so existing accounts keep working.
+- Login is limited to 15 attempts per 15 minutes per IP address (successful
+  logins included); recovery to 10.
+- On Render's free plan the server sleeps after ~15 minutes idle and the next
+  request waits for it to start. The AR app calls `GET /api/health` when it
+  opens and when its login panel appears, so the server is awake by the time
+  the user logs in.
