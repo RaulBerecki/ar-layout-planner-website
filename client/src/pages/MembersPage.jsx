@@ -62,6 +62,8 @@ export default function MembersPage() {
   const linePermissions = permissions.filter((p) => p.scope === 'line');
   const orgPermissions = permissions.filter((p) => p.scope === 'org');
   const columns = [...linePermissions, ...orgPermissions];
+  // First column of each permission group gets a divider line
+  const groupStart = (i) => i === 0 || i === linePermissions.length;
 
   const copyInvite = async () => {
     try {
@@ -187,18 +189,22 @@ export default function MembersPage() {
                   <thead>
                     <tr>
                       <th rowSpan={2}>Role</th>
-                      <th colSpan={linePermissions.length} className="group">
+                      <th colSpan={linePermissions.length} className="group group-start">
                         On each line
                       </th>
-                      <th colSpan={orgPermissions.length} className="group">
+                      <th colSpan={orgPermissions.length} className="group group-start">
                         In the organization
                       </th>
-                      <th rowSpan={2}>Members</th>
+                      <th rowSpan={2} className="group-start">Members</th>
                       <th rowSpan={2}></th>
                     </tr>
                     <tr>
-                      {columns.map((p) => (
-                        <th key={p.key} className="check-cell" title={p.label}>
+                      {columns.map((p, i) => (
+                        <th
+                          key={p.key}
+                          className={`check-cell${groupStart(i) ? ' group-start' : ''}`}
+                          title={p.label}
+                        >
                           {p.short}
                         </th>
                       ))}
@@ -207,13 +213,20 @@ export default function MembersPage() {
                   <tbody>
                     {roles.map((role) => (
                       <tr key={role.id}>
-                        <td className="file-name">
+                        <td className="role-name">
                           {role.name}
-                          {role.is_builtin_admin && <span className="badge">built-in</span>}
-                          {role.is_default && <span className="badge">new members</span>}
+                          {(role.is_builtin_admin || role.is_default) && (
+                            <div className="role-tags">
+                              {role.is_builtin_admin && <span className="badge">built-in</span>}
+                              {role.is_default && <span className="badge">new members</span>}
+                            </div>
+                          )}
                         </td>
-                        {columns.map((p) => (
-                          <td key={p.key} className="check-cell">
+                        {columns.map((p, i) => (
+                          <td
+                            key={p.key}
+                            className={`check-cell${groupStart(i) ? ' group-start' : ''}`}
+                          >
                             <input
                               type="checkbox"
                               checked={role.permissions.includes(p.key)}
@@ -224,10 +237,10 @@ export default function MembersPage() {
                             />
                           </td>
                         ))}
-                        <td>
+                        <td className="group-start members-cell">
                           {role.member_count}
                           {role.line_assignments > 0 && (
-                            <span className="muted"> +{role.line_assignments} on lines</span>
+                            <div className="muted">+{role.line_assignments} on lines</div>
                           )}
                         </td>
                         <td className="row-actions">

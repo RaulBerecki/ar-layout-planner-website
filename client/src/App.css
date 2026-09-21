@@ -680,6 +680,7 @@ a.btn {
   font-size: 0.72rem;
   font-weight: 600;
   vertical-align: middle;
+  white-space: nowrap;
 }
 
 .line-code {
@@ -692,6 +693,25 @@ a.btn {
   justify-content: flex-start;
 }
 
+td.row-actions {
+  display: table-cell;
+  white-space: nowrap;
+  text-align: right;
+}
+
+td.row-actions > * {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+td.row-actions > * + * {
+  margin-left: 0.5rem;
+}
+
+td.row-actions.start {
+  text-align: left;
+}
+
 /* ---------- Roles and members ---------- */
 
 .table-scroll {
@@ -700,7 +720,48 @@ a.btn {
 
 .roles-table th.group {
   text-align: center;
+}
+
+.roles-table th,
+.roles-table td {
+  padding: 0.65rem 0.75rem;
+  vertical-align: middle;
+}
+
+.roles-table .group-start {
   border-left: 1px solid var(--border);
+}
+
+.roles-table thead th.check-cell {
+  white-space: normal;
+  line-height: 1.3;
+  min-width: 4.5rem;
+  max-width: 6.5rem;
+}
+
+.roles-table .role-name {
+  font-weight: 600;
+  min-width: 9rem;
+  white-space: nowrap;
+}
+
+.role-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
+.role-tags .badge {
+  margin-left: 0;
+}
+
+.roles-table .members-cell {
+  white-space: nowrap;
+}
+
+.roles-table .members-cell .muted {
+  font-size: 0.8rem;
 }
 
 .check-cell {
