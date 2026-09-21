@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../AuthContext';
 import { api } from '../api';
 import AppHeader from '../components/AppHeader';
@@ -47,6 +47,7 @@ export default function MembersPage() {
   }, [canManage]);
 
   // Runs a change, then reloads everything so the page always shows what the server stored.
+  // Used for rare actions (create, rename, delete role) where a short wait is fine.
   const run = async (action) => {
     setError('');
     try {
@@ -55,6 +56,40 @@ export default function MembersPage() {
       setError(err.message);
     }
     await load();
+  };
+
+  // Frequent edits (checkboxes, role pickers) show up immediately and are saved in the
+  // background. Saves go out one at a time so they reach the server in click order; if one
+  // is refused, the page reloads to show what the server actually stored.
+  const saveQueue = useRef(Promise.resolve());
+  const saveInBackground = (save) => {
+    setError('');
+    saveQueue.current = saveQueue.current.then(async () => {
+      try {
+        await save();
+      } catch (err) {
+        await load(); // clears the error banner, so the message is set afterwards
+        setError(err.message);
+      }
+    });
+    return saveQueue.current;
+  };
+
+  // Member and line-assignment counts shown in the roles table, derived from the members list
+  const withCounts = (roleList, memberList) =>
+    roleList.map((r) => ({
+      ...r,
+      member_count: memberList.filter((m) => m.role_id === r.id).length,
+      line_assignments: memberList.reduce(
+        (n, m) => n + Object.values(m.line_roles).filter((id) => id === r.id).length,
+        0
+      ),
+    }));
+
+  const updateMembers = (change) => {
+    const next = members.map(change);
+    setMembers(next);
+    setRoles((current) => withCounts(current, next));
   };
 
   const roleName = (roleId) => roles.find((r) => r.id === roleId)?.name ?? '—';
@@ -89,7 +124,16 @@ export default function MembersPage() {
     const next = role.permissions.includes(key)
       ? role.permissions.filter((p) => p !== key)
       : [...role.permissions, key];
-    run(() => api.updateRole(role.id, { permissions: next }));
+    setRoles((current) =>
+      current.map((r) => (r.id === role.id ? { ...r, permissions: next } : r))
+    );
+    saveInBackground(() => api.updateRole(role.id, { permissions: next }));
+  };
+
+  const changeDefaultRole = (roleId) => {
+    setOrg((current) => ({ ...current, default_role_id: roleId }));
+    setRoles((current) => current.map((r) => ({ ...r, is_default: r.id === roleId })));
+    saveInBackground(() => api.setDefaultRole(roleId));
   };
 
   const renameRole = (role) => {
@@ -103,15 +147,26 @@ export default function MembersPage() {
     run(() => api.deleteRole(role.id));
   };
 
-  const changeMemberRole = (member, roleId) =>
-    run(async () => {
+  const changeMemberRole = (member, roleId) => {
+    updateMembers((m) => (m.id === member.id ? { ...m, role_id: roleId } : m));
+    saveInBackground(async () => {
       await api.setMemberRole(member.id, roleId);
       // Changing your own role changes what this page (and the menu) may show.
       if (member.id === user?.id) await refreshUser();
     });
+  };
 
-  const changeLineRole = (member, lineId, value) =>
-    run(() => api.setMemberLineRole(member.id, lineId, value === '' ? null : Number(value)));
+  const changeLineRole = (member, lineId, value) => {
+    const roleId = value === '' ? null : Number(value);
+    updateMembers((m) => {
+      if (m.id !== member.id) return m;
+      const lineRoles = { ...m.line_roles };
+      if (roleId === null) delete lineRoles[lineId];
+      else lineRoles[lineId] = roleId;
+      return { ...m, line_roles: lineRoles };
+    });
+    saveInBackground(() => api.setMemberLineRole(member.id, lineId, roleId));
+  };
 
   if (!canManage) {
     return (
@@ -154,7 +209,7 @@ export default function MembersPage() {
                     New members get the role
                     <select
                       value={org.default_role_id ?? ''}
-                      onChange={(e) => run(() => api.setDefaultRole(Number(e.target.value)))}
+                      onChange={(e) => changeDefaultRole(Number(e.target.value))}
                     >
                       {roles
                         .filter((r) => !r.is_builtin_admin)

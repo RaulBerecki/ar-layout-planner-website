@@ -1,8 +1,14 @@
 # Render blueprint — deploys the whole app as one free web service.
 # In the Render dashboard: New + -> Blueprint -> select this repository.
+#
+# Region: keep the server next to the Supabase database (eu-west-3, Paris). Every
+# request makes several database round trips, so a server on another continent
+# multiplies page latency. Render cannot move an existing service to another
+# region, which is why this service has its own name.
 services:
   - type: web
-    name: ar-layout-planner
+    name: ar-layout-planner-eu
+    region: frankfurt
     runtime: node
     plan: free
     buildCommand: npm run build
