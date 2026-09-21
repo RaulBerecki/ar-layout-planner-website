@@ -9,16 +9,20 @@ import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import QRCode from 'qrcode';
 import {
   pool,
   supabase,
   BUCKET,
   MAX_FILE_SIZE,
   initDb,
+  seedDefaultRoles,
   generateInviteCode,
+  generateLineCode,
   generateRecoveryCode,
   normalizeRecoveryCode,
 } from './db.js';
+import { PERMISSIONS, PERMISSION_KEYS, LINE_PERMISSION_KEYS } from './permissions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,6 +30,9 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = process.env.PORT || 4000;
 
 const app = express();
+// Render (and most hosts) put a proxy in front of the app. Without this, req.ip is the proxy's
+// address, so every user would share one login-attempt counter in throttle() below.
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json({ limit: '1mb' })); // thumbnails arrive as data URLs
 
@@ -83,12 +90,58 @@ function signToken(user) {
   });
 }
 
-function publicUser(userRow, orgRow) {
+// A users row joined with its organization role.
+const USER_WITH_ROLE = `
+  SELECT u.*, r.name AS role_name, r.permissions, r.is_builtin_admin
+  FROM users u LEFT JOIN roles r ON r.id = u.role_id
+`;
+
+// Normalizes a row from USER_WITH_ROLE (or a query with the same role columns).
+function toAuthUser(row) {
   return {
-    id: userRow.id,
-    username: userRow.username,
-    organization: orgRow ? { id: orgRow.id, name: orgRow.name } : null,
+    id: row.id,
+    username: row.username,
+    org_id: row.org_id,
+    role_id: row.role_id,
+    role_name: row.role_name ?? null,
+    isAdmin: row.is_builtin_admin === true,
+    permissions: row.permissions ?? [],
   };
+}
+
+function hasPermission(user, key) {
+  return user.isAdmin || user.permissions.includes(key);
+}
+
+function requirePermission(key) {
+  return (req, res, next) =>
+    hasPermission(req.user, key)
+      ? next()
+      : res.status(403).json({ error: "You don't have permission to do this" });
+}
+
+// Permissions a member has on one line: a per-line role replaces their organization role
+// there. Administrators always keep full access, whatever per-line role they were given.
+function linePermissions(user, overridePermissions) {
+  if (user.isAdmin) return LINE_PERMISSION_KEYS;
+  const granted = overridePermissions ?? user.permissions;
+  return LINE_PERMISSION_KEYS.filter((key) => granted.includes(key));
+}
+
+function publicUser(user, orgRow) {
+  return {
+    id: user.id,
+    username: user.username,
+    organization: orgRow ? { id: orgRow.id, name: orgRow.name } : null,
+    role: user.role_id ? { id: user.role_id, name: user.role_name } : null,
+    permissions: user.isAdmin ? PERMISSION_KEYS : user.permissions,
+  };
+}
+
+// Route ids arrive as strings; anything that isn't a positive integer is treated as "not found".
+function idParam(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 async function requireAuth(req, res, next) {
@@ -97,13 +150,10 @@ async function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    // Always load fresh from DB so org membership is current
-    const { rows } = await pool.query(
-      'SELECT id, username, org_id FROM users WHERE id = $1',
-      [payload.id]
-    );
+    // Always load fresh from DB so org membership and role changes apply immediately
+    const { rows } = await pool.query(`${USER_WITH_ROLE} WHERE u.id = $1`, [payload.id]);
     if (rows.length === 0) return res.status(401).json({ error: 'Not authenticated' });
-    req.user = rows[0];
+    req.user = toAuthUser(rows[0]);
     next();
   } catch (err) {
     if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
@@ -150,6 +200,7 @@ app.post('/api/register', throttle(20), async (req, res, next) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      let roleId;
       if (!org) {
         const code = await generateInviteCode();
         const { rows } = await client.query(
@@ -157,18 +208,26 @@ app.post('/api/register', throttle(20), async (req, res, next) => {
           [orgName.trim(), code]
         );
         org = rows[0];
+        // Whoever creates the organization administers it.
+        roleId = (await seedDefaultRoles(client, org.id)).admin;
+      } else {
+        // Joining with the invite code: the organization's default role (Viewer unless changed).
+        roleId = org.default_role_id;
       }
       const hash = await bcrypt.hash(password, 10);
       // Shown to the user exactly once; only its hash is kept.
       const recoveryCode = generateRecoveryCode();
       const recoveryHash = await bcrypt.hash(normalizeRecoveryCode(recoveryCode), 10);
       const { rows: userRows } = await client.query(
-        `INSERT INTO users (username, password_hash, org_id, recovery_code_hash)
-         VALUES ($1, $2, $3, $4) RETURNING *`,
-        [username.trim(), hash, org.id, recoveryHash]
+        `INSERT INTO users (username, password_hash, org_id, recovery_code_hash, role_id)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [username.trim(), hash, org.id, recoveryHash, roleId]
       );
       await client.query('COMMIT');
-      const user = userRows[0];
+      const { rows: created } = await pool.query(`${USER_WITH_ROLE} WHERE u.id = $1`, [
+        userRows[0].id,
+      ]);
+      const user = toAuthUser(created[0]);
       res.status(201).json({
         token: signToken(user),
         user: publicUser(user, org),
@@ -194,18 +253,21 @@ app.post('/api/login', throttle(15), async (req, res, next) => {
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
     }
-    // One round trip: the user and their organization together.
+    // One round trip: the user, their organization and their role together.
     const { rows } = await pool.query(
-      `SELECT u.*, o.name AS org_name
-       FROM users u LEFT JOIN organizations o ON o.id = u.org_id
+      `SELECT u.*, o.name AS org_name, r.name AS role_name, r.permissions, r.is_builtin_admin
+       FROM users u
+       LEFT JOIN organizations o ON o.id = u.org_id
+       LEFT JOIN roles r ON r.id = u.role_id
        WHERE u.username = $1`,
       [username.trim()]
     );
-    const user = rows[0];
-    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+    const row = rows[0];
+    if (!row || !(await bcrypt.compare(password, row.password_hash))) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
-    const org = user.org_name != null ? { id: user.org_id, name: user.org_name } : null;
+    const user = toAuthUser(row);
+    const org = row.org_name != null ? { id: row.org_id, name: row.org_name } : null;
     res.json({ token: signToken(user), user: publicUser(user, org) });
   } catch (err) {
     next(err);
@@ -275,14 +337,13 @@ app.get('/api/org', requireAuth, async (req, res, next) => {
       'SELECT COUNT(*)::int AS n FROM users WHERE org_id = $1',
       [org.id]
     );
-    res.json({
-      organization: {
-        id: org.id,
-        name: org.name,
-        invite_code: org.invite_code,
-        member_count: countRows[0].n,
-      },
-    });
+    const organization = { id: org.id, name: org.name, member_count: countRows[0].n };
+    // Anyone holding the invite code can join, so only member managers get to see it.
+    if (hasPermission(req.user, 'members.manage')) {
+      organization.invite_code = org.invite_code;
+      organization.default_role_id = org.default_role_id;
+    }
+    res.json({ organization });
   } catch (err) {
     next(err);
   }
@@ -318,7 +379,7 @@ app.get('/api/files', requireAuth, async (req, res, next) => {
   }
 });
 
-app.post('/api/files', requireAuth, (req, res, next) => {
+app.post('/api/files', requireAuth, requirePermission('models.upload'), (req, res, next) => {
   upload.single('file')(req, res, async (err) => {
     try {
       if (err) return res.status(400).json({ error: err.message });
@@ -402,13 +463,414 @@ app.delete('/api/files/:id', requireAuth, async (req, res, next) => {
   try {
     const file = await getOrgFile(req, res);
     if (!file) return;
-    if (file.user_id !== req.user.id) {
-      return res.status(403).json({ error: 'You can only delete your own files' });
+    // Uploaders delete their own models; member managers can remove any model.
+    const isOwner = file.user_id === req.user.id;
+    if (!hasPermission(req.user, 'members.manage')) {
+      if (!isOwner) return res.status(403).json({ error: 'You can only delete your own files' });
+      if (!hasPermission(req.user, 'models.upload')) {
+        return res.status(403).json({ error: "You don't have permission to delete models" });
+      }
     }
     await pool.query('DELETE FROM files WHERE id = $1', [file.id]);
     const { error } = await supabase.storage.from(BUCKET).remove([file.storage_path]);
     if (error) console.error(`Storage cleanup failed for ${file.storage_path}: ${error.message}`);
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------- Roles (custom per organization) ----------
+
+app.get('/api/permissions', requireAuth, (req, res) => {
+  res.json({ permissions: PERMISSIONS });
+});
+
+// Loads a role of the caller's organization, or answers 404.
+async function getOrgRole(req, res, roleId) {
+  const id = idParam(roleId);
+  const { rows } = id
+    ? await pool.query('SELECT * FROM roles WHERE id = $1 AND org_id = $2', [id, req.user.org_id])
+    : { rows: [] };
+  if (rows.length === 0) {
+    res.status(404).json({ error: 'Role not found' });
+    return null;
+  }
+  return rows[0];
+}
+
+// Validates { name, permissions }; with partial, missing fields are left out.
+function parseRoleBody(body, { partial = false } = {}) {
+  const result = {};
+  if (body?.name !== undefined || !partial) {
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (name.length < 1 || name.length > 40) return { error: 'Role name must be 1-40 characters' };
+    result.name = name;
+  }
+  if (body?.permissions !== undefined || !partial) {
+    const list = body?.permissions;
+    if (!Array.isArray(list) || list.some((p) => !PERMISSION_KEYS.includes(p))) {
+      return { error: 'Unknown permission' };
+    }
+    result.permissions = PERMISSION_KEYS.filter((p) => list.includes(p));
+  }
+  return result;
+}
+
+app.get('/api/roles', requireAuth, requirePermission('members.manage'), async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT r.id, r.name, r.permissions, r.is_builtin_admin,
+              (o.default_role_id = r.id) AS is_default,
+              (SELECT COUNT(*)::int FROM users u WHERE u.role_id = r.id) AS member_count,
+              (SELECT COUNT(*)::int FROM line_roles lr WHERE lr.role_id = r.id) AS line_assignments
+       FROM roles r JOIN organizations o ON o.id = r.org_id
+       WHERE r.org_id = $1
+       ORDER BY r.is_builtin_admin DESC, r.id`,
+      [req.user.org_id]
+    );
+    const roles = rows.map((r) => ({
+      ...r,
+      permissions: r.is_builtin_admin ? PERMISSION_KEYS : r.permissions,
+    }));
+    res.json({ roles });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/roles', requireAuth, requirePermission('members.manage'), async (req, res, next) => {
+  try {
+    const body = parseRoleBody(req.body);
+    if (body.error) return res.status(400).json({ error: body.error });
+    const { rows } = await pool.query(
+      'INSERT INTO roles (org_id, name, permissions) VALUES ($1, $2, $3) RETURNING id',
+      [req.user.org_id, body.name, body.permissions]
+    );
+    res.status(201).json({ id: rows[0].id });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'A role with this name already exists' });
+    }
+    next(err);
+  }
+});
+
+app.patch('/api/roles/:id', requireAuth, requirePermission('members.manage'), async (req, res, next) => {
+  try {
+    const role = await getOrgRole(req, res, req.params.id);
+    if (!role) return;
+    if (role.is_builtin_admin) {
+      return res.status(400).json({ error: 'The Administrator role cannot be changed' });
+    }
+    const body = parseRoleBody(req.body, { partial: true });
+    if (body.error) return res.status(400).json({ error: body.error });
+    await pool.query(
+      `UPDATE roles SET name = COALESCE($1, name), permissions = COALESCE($2, permissions)
+       WHERE id = $3`,
+      [body.name ?? null, body.permissions ?? null, role.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'A role with this name already exists' });
+    }
+    next(err);
+  }
+});
+
+app.delete('/api/roles/:id', requireAuth, requirePermission('members.manage'), async (req, res, next) => {
+  try {
+    const role = await getOrgRole(req, res, req.params.id);
+    if (!role) return;
+    if (role.is_builtin_admin) {
+      return res.status(400).json({ error: 'The Administrator role cannot be deleted' });
+    }
+    const { rows: orgRows } = await pool.query(
+      'SELECT default_role_id FROM organizations WHERE id = $1',
+      [req.user.org_id]
+    );
+    if (orgRows[0].default_role_id === role.id) {
+      return res.status(400).json({
+        error: 'New members get this role. Choose another role for new members first.',
+      });
+    }
+    const { rows: usage } = await pool.query(
+      `SELECT (SELECT COUNT(*)::int FROM users WHERE role_id = $1)
+            + (SELECT COUNT(*)::int FROM line_roles WHERE role_id = $1) AS n`,
+      [role.id]
+    );
+    if (usage[0].n > 0) {
+      return res.status(409).json({
+        error: 'This role is still assigned. Give those members another role first.',
+      });
+    }
+    await pool.query('DELETE FROM roles WHERE id = $1', [role.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Role given to people who join with the invite code.
+app.put('/api/org/default-role', requireAuth, requirePermission('members.manage'), async (req, res, next) => {
+  try {
+    const role = await getOrgRole(req, res, req.body?.roleId);
+    if (!role) return;
+    if (role.is_builtin_admin) {
+      return res.status(400).json({ error: "New members can't become Administrators automatically" });
+    }
+    await pool.query('UPDATE organizations SET default_role_id = $1 WHERE id = $2', [
+      role.id,
+      req.user.org_id,
+    ]);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------- Members ----------
+
+// Loads a member of the caller's organization (with their role), or answers 404.
+async function getOrgMember(req, res, userId) {
+  const id = idParam(userId);
+  const { rows } = id
+    ? await pool.query(`${USER_WITH_ROLE} WHERE u.id = $1 AND u.org_id = $2`, [id, req.user.org_id])
+    : { rows: [] };
+  if (rows.length === 0) {
+    res.status(404).json({ error: 'Member not found' });
+    return null;
+  }
+  return toAuthUser(rows[0]);
+}
+
+app.get('/api/members', requireAuth, requirePermission('members.manage'), async (req, res, next) => {
+  try {
+    const { rows: members } = await pool.query(
+      'SELECT id, username, role_id, created_at FROM users WHERE org_id = $1 ORDER BY id',
+      [req.user.org_id]
+    );
+    const { rows: lineRoles } = await pool.query(
+      `SELECT lr.user_id, lr.line_id, lr.role_id
+       FROM line_roles lr JOIN production_lines l ON l.id = lr.line_id
+       WHERE l.org_id = $1`,
+      [req.user.org_id]
+    );
+    res.json({
+      members: members.map((m) => ({
+        ...m,
+        // { lineId: roleId } for the lines where this member has a different role
+        line_roles: Object.fromEntries(
+          lineRoles.filter((lr) => lr.user_id === m.id).map((lr) => [lr.line_id, lr.role_id])
+        ),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Changes a member's organization role.
+app.put('/api/members/:id/role', requireAuth, requirePermission('members.manage'), async (req, res, next) => {
+  try {
+    const member = await getOrgMember(req, res, req.params.id);
+    if (!member) return;
+    const role = await getOrgRole(req, res, req.body?.roleId);
+    if (!role) return;
+    // Never leave the organization without an Administrator.
+    if (member.isAdmin && !role.is_builtin_admin) {
+      const { rows } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM users u JOIN roles r ON r.id = u.role_id
+         WHERE u.org_id = $1 AND r.is_builtin_admin`,
+        [req.user.org_id]
+      );
+      if (rows[0].n <= 1) {
+        return res.status(400).json({ error: 'The organization needs at least one Administrator' });
+      }
+    }
+    await pool.query('UPDATE users SET role_id = $1 WHERE id = $2', [role.id, member.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Sets a member's role on one line ({ roleId }), or removes it ({ roleId: null }) so the
+// organization role applies there again.
+app.put(
+  '/api/members/:id/lines/:lineId',
+  requireAuth,
+  requirePermission('members.manage'),
+  async (req, res, next) => {
+    try {
+      const member = await getOrgMember(req, res, req.params.id);
+      if (!member) return;
+      const line = await getOrgLine(req, res, req.params.lineId);
+      if (!line) return;
+      if (req.body?.roleId == null) {
+        await pool.query('DELETE FROM line_roles WHERE line_id = $1 AND user_id = $2', [
+          line.id,
+          member.id,
+        ]);
+        return res.json({ ok: true });
+      }
+      const role = await getOrgRole(req, res, req.body.roleId);
+      if (!role) return;
+      await pool.query(
+        `INSERT INTO line_roles (line_id, user_id, role_id) VALUES ($1, $2, $3)
+         ON CONFLICT (line_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id`,
+        [line.id, member.id, role.id]
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ---------- Production lines ----------
+
+// Loads a line of the caller's organization, or answers 404.
+async function getOrgLine(req, res, lineId) {
+  const id = idParam(lineId);
+  const { rows } = id
+    ? await pool.query('SELECT * FROM production_lines WHERE id = $1 AND org_id = $2', [
+        id,
+        req.user.org_id,
+      ])
+    : { rows: [] };
+  if (rows.length === 0) {
+    res.status(404).json({ error: 'Line not found' });
+    return null;
+  }
+  return rows[0];
+}
+
+// The caller's permissions on one line (their per-line role if set, else their organization role).
+async function lineAccess(user, lineId) {
+  const { rows } = await pool.query(
+    `SELECT r.permissions FROM line_roles lr JOIN roles r ON r.id = lr.role_id
+     WHERE lr.line_id = $1 AND lr.user_id = $2`,
+    [lineId, user.id]
+  );
+  return linePermissions(user, rows[0]?.permissions);
+}
+
+// Validates { name, markerSizeCm }; with partial, missing fields are left out.
+function parseLineBody(body, { partial = false } = {}) {
+  const result = {};
+  if (body?.name !== undefined || !partial) {
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (name.length < 1 || name.length > 80) return { error: 'Line name must be 1-80 characters' };
+    result.name = name;
+  }
+  if (body?.markerSizeCm !== undefined) {
+    const size = Number(body.markerSizeCm);
+    if (!Number.isFinite(size) || size < 5 || size > 100) {
+      return { error: 'QR code size must be between 5 and 100 cm' };
+    }
+    result.markerSizeCm = Math.round(size * 10) / 10;
+  }
+  return result;
+}
+
+// What a line's QR code contains. Scanned with a phone camera it opens the line on this
+// website; the AR app recognises the printed image and uses the code at the end.
+// Set PUBLIC_URL so printed codes don't depend on which address the site was opened from.
+function lineUrl(req, code) {
+  const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+  return `${base.replace(/\/$/, '')}/line/${code}`;
+}
+
+app.get('/api/lines', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT l.id, l.name, l.code, l.marker_size_cm::float8 AS marker_size_cm, l.created_at,
+              r.name AS line_role_name, r.permissions AS line_role_permissions
+       FROM production_lines l
+       LEFT JOIN line_roles lr ON lr.line_id = l.id AND lr.user_id = $2
+       LEFT JOIN roles r ON r.id = lr.role_id
+       WHERE l.org_id = $1
+       ORDER BY l.created_at, l.id`,
+      [req.user.org_id, req.user.id]
+    );
+    // Line and member managers see every line, so they can manage it or assign roles on it.
+    const seesAll = hasPermission(req.user, 'lines.manage') || hasPermission(req.user, 'members.manage');
+    const lines = rows
+      .map(({ line_role_name, line_role_permissions, ...line }) => ({
+        ...line,
+        role: req.user.isAdmin || !line_role_name ? req.user.role_name : line_role_name,
+        permissions: linePermissions(req.user, line_role_permissions),
+      }))
+      .filter((line) => seesAll || line.permissions.includes('line.view'));
+    res.json({ lines });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/lines', requireAuth, requirePermission('lines.manage'), async (req, res, next) => {
+  try {
+    const body = parseLineBody(req.body);
+    if (body.error) return res.status(400).json({ error: body.error });
+    const code = await generateLineCode();
+    const { rows } = await pool.query(
+      `INSERT INTO production_lines (org_id, name, code, marker_size_cm, created_by)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [req.user.org_id, body.name, code, body.markerSizeCm ?? 18, req.user.id]
+    );
+    res.status(201).json({ id: rows[0].id, code });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch('/api/lines/:id', requireAuth, requirePermission('lines.manage'), async (req, res, next) => {
+  try {
+    const line = await getOrgLine(req, res, req.params.id);
+    if (!line) return;
+    const body = parseLineBody(req.body, { partial: true });
+    if (body.error) return res.status(400).json({ error: body.error });
+    await pool.query(
+      `UPDATE production_lines
+       SET name = COALESCE($1, name), marker_size_cm = COALESCE($2, marker_size_cm)
+       WHERE id = $3`,
+      [body.name ?? null, body.markerSizeCm ?? null, line.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/lines/:id', requireAuth, requirePermission('lines.manage'), async (req, res, next) => {
+  try {
+    const line = await getOrgLine(req, res, req.params.id);
+    if (!line) return;
+    await pool.query('DELETE FROM production_lines WHERE id = $1', [line.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PNG of the line's QR code. The same image is printed at marker_size_cm and registered in the
+// AR app at that physical size, so the app can recognise it and anchor layouts to it.
+app.get('/api/lines/:id/qr.png', requireAuth, async (req, res, next) => {
+  try {
+    const line = await getOrgLine(req, res, req.params.id);
+    if (!line) return;
+    const permissions = await lineAccess(req.user, line.id);
+    if (!permissions.includes('line.view') && !hasPermission(req.user, 'lines.manage')) {
+      return res.status(403).json({ error: "You don't have access to this line" });
+    }
+    const png = await QRCode.toBuffer(lineUrl(req, line.code), {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 1024,
+    });
+    res.type('png').set('Cache-Control', 'private, max-age=3600').send(png);
   } catch (err) {
     next(err);
   }

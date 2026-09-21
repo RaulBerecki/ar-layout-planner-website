@@ -80,4 +80,36 @@ export const api = {
     a.href = url;
     a.click();
   },
+
+  // ---------- Production lines ----------
+  listLines: () => request('/api/lines'),
+  createLine: ({ name, markerSizeCm }) =>
+    request('/api/lines', { method: 'POST', body: { name, markerSizeCm } }),
+  updateLine: (id, changes) => request(`/api/lines/${id}`, { method: 'PATCH', body: changes }),
+  deleteLine: (id) => request(`/api/lines/${id}`, { method: 'DELETE' }),
+  // The QR image needs the login token, so it is fetched and turned into a local object URL.
+  // Call URL.revokeObjectURL on the result when it is no longer shown.
+  getLineQrUrl: async (id) => {
+    const res = await fetch(`/api/lines/${id}/qr.png`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+    if (!res.ok) throw new Error(`Could not load the QR code (${res.status})`);
+    return URL.createObjectURL(await res.blob());
+  },
+
+  // ---------- Roles and members ----------
+  listPermissions: () => request('/api/permissions'),
+  listRoles: () => request('/api/roles'),
+  createRole: ({ name, permissions }) =>
+    request('/api/roles', { method: 'POST', body: { name, permissions } }),
+  updateRole: (id, changes) => request(`/api/roles/${id}`, { method: 'PATCH', body: changes }),
+  deleteRole: (id) => request(`/api/roles/${id}`, { method: 'DELETE' }),
+  setDefaultRole: (roleId) =>
+    request('/api/org/default-role', { method: 'PUT', body: { roleId } }),
+  listMembers: () => request('/api/members'),
+  setMemberRole: (userId, roleId) =>
+    request(`/api/members/${userId}/role`, { method: 'PUT', body: { roleId } }),
+  // roleId null removes the per-line role, so the organization role applies again.
+  setMemberLineRole: (userId, lineId, roleId) =>
+    request(`/api/members/${userId}/lines/${lineId}`, { method: 'PUT', body: { roleId } }),
 };

@@ -548,3 +548,283 @@ body {
 .empty-state .btn {
   margin-top: 0.75rem;
 }
+
+/* ---------- Navigation ---------- */
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+}
+
+.main-nav {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 0.4rem 0.8rem;
+  border-radius: 8px;
+  font-size: 0.92rem;
+}
+
+.nav-link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.nav-link.active {
+  color: #fff;
+  background: var(--primary);
+  font-weight: 600;
+}
+
+a.btn {
+  display: inline-block;
+  text-decoration: none;
+  text-align: center;
+}
+
+/* ---------- Panels and forms ---------- */
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.panel p {
+  margin: 0;
+}
+
+.form-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.form-row label,
+.inline-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.form-row label.grow {
+  flex: 1;
+  min-width: 200px;
+}
+
+.panel input,
+.panel select,
+.file-table input:not([type='checkbox']),
+.file-table select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 0.5rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.92rem;
+}
+
+.panel input:focus,
+.panel select:focus,
+.file-table input:focus,
+.file-table select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.table-input {
+  width: 100%;
+}
+
+.table-input.narrow {
+  width: 5.5rem;
+}
+
+.panel-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.inline-form-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.line-code {
+  font-family: ui-monospace, Consolas, monospace;
+  color: #7faaff;
+  letter-spacing: 0.05em;
+}
+
+.row-actions.start {
+  justify-content: flex-start;
+}
+
+/* ---------- Roles and members ---------- */
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.roles-table th.group {
+  text-align: center;
+  border-left: 1px solid var(--border);
+}
+
+.check-cell {
+  text-align: center !important;
+  white-space: nowrap;
+}
+
+.check-cell input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.check-cell input:disabled {
+  cursor: not-allowed;
+}
+
+.file-table tr.sub-row:hover {
+  background: transparent;
+}
+
+.sub-row > td {
+  background: var(--bg);
+  padding-left: 2.5rem;
+}
+
+.line-roles-table {
+  border-collapse: collapse;
+}
+
+.line-roles-table td {
+  padding: 0.35rem 1rem 0.35rem 0;
+  border: none;
+}
+
+/* ---------- Printable QR sheet ---------- */
+
+.print-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.5rem;
+}
+
+.print-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.print-sheet {
+  width: 21cm;
+  min-height: 29.7cm;
+  padding: 1.5cm;
+  background: #fff;
+  color: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+.print-title {
+  margin: 0 0 1cm;
+  font-size: 22pt;
+  text-align: center;
+}
+
+.print-qr {
+  display: block;
+  image-rendering: pixelated;
+}
+
+.print-code {
+  margin: 0.4cm 0 0.8cm;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 16pt;
+  letter-spacing: 0.15em;
+}
+
+.print-ruler {
+  width: 10cm;
+  height: 0.4cm;
+  border-bottom: 1px solid #000;
+  border-right: 1px solid #000;
+  background: repeating-linear-gradient(to right, #000 0 1px, transparent 1px 1cm);
+}
+
+.print-ruler-label {
+  margin: 0.1cm 0 0.6cm;
+  font-size: 9pt;
+}
+
+.print-note {
+  max-width: 15cm;
+  margin: 0;
+  font-size: 9pt;
+  text-align: center;
+  color: #333;
+}
+
+@page {
+  size: A4;
+  margin: 0;
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-page {
+    padding: 0;
+  }
+
+  .print-sheet {
+    box-shadow: none;
+  }
+}

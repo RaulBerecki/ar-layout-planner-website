@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
 import { api } from '../api';
 
@@ -19,6 +19,8 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const { login, register, enterApp } = useAuth();
   const navigate = useNavigate();
+  // Page the visitor wanted before being sent to log in (e.g. a line opened from its QR code)
+  const returnTo = useLocation().state?.from || '/';
 
   const isRegister = mode === 'register';
   const isRecover = mode === 'recover';
@@ -62,7 +64,7 @@ export default function LoginPage() {
         setIssued({ code: data.recovery_code, context: 'recover' });
       } else {
         await login(username, password);
-        navigate('/', { replace: true });
+        navigate(returnTo, { replace: true });
       }
     } catch (err) {
       setError(err.message);
@@ -100,7 +102,7 @@ export default function LoginPage() {
             onClick={() => {
               if (fromRegister) {
                 enterApp();
-                navigate('/', { replace: true });
+                navigate(returnTo, { replace: true });
               } else {
                 setIssued(null);
                 switchMode('login');

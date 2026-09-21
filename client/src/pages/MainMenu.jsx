@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../AuthContext';
 import { api } from '../api';
 import ModelViewer from '../components/ModelViewer';
+import AppHeader from '../components/AppHeader';
 import { generateThumbnail } from '../utils/thumbnail';
 
 function formatSize(bytes) {
@@ -17,7 +18,11 @@ function formatDate(dateStr) {
 }
 
 export default function MainMenu() {
-  const { user, logout } = useAuth();
+  const { user, logout, can } = useAuth();
+  const canUpload = can('models.upload');
+  // Uploaders delete their own models; member managers can delete any model.
+  const canDelete = (file) =>
+    can('members.manage') || (canUpload && file.uploaded_by === user?.username);
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -101,18 +106,7 @@ export default function MainMenu() {
 
   return (
     <div className="main-page">
-      <header className="topbar">
-        <div>
-          <h1>AR Manufacturing Layout Planner</h1>
-          <span className="muted">
-            {org ? `${org.name} · 3D model library` : '3D model library'}
-          </span>
-        </div>
-        <div className="topbar-right">
-          <span className="muted">Signed in as <strong>{user?.username}</strong></span>
-          <button className="btn ghost" onClick={logout}>Log out</button>
-        </div>
-      </header>
+      <AppHeader subtitle={org ? `${org.name} · 3D model library` : '3D model library'} />
 
       <main className="content">
         {org && (
@@ -123,35 +117,40 @@ export default function MainMenu() {
                 {' '}· {org.member_count} member{org.member_count === 1 ? '' : 's'}
               </span>
             </div>
-            <div className="invite-box">
-              <span className="muted">Invite code:</span>
-              <code className="invite-code">{org.invite_code}</code>
-              <button className="btn small" onClick={copyInvite}>
-                {copied ? 'Copied!' : 'Copy'}
-              </button>
-            </div>
+            {/* The server only sends the invite code to members who can manage members */}
+            {org.invite_code && (
+              <div className="invite-box">
+                <span className="muted">Invite code:</span>
+                <code className="invite-code">{org.invite_code}</code>
+                <button className="btn small" onClick={copyInvite}>
+                  {copied ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
         <div className="toolbar">
           <h2 className="section-title">GLB models</h2>
-          <div>
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".glb"
-              multiple
-              hidden
-              onChange={(e) => handleUpload(e.target.files)}
-            />
-            <button
-              className="btn primary"
-              disabled={uploading}
-              onClick={() => inputRef.current?.click()}
-            >
-              {uploading ? 'Uploading…' : '+ Upload GLB'}
-            </button>
-          </div>
+          {canUpload && (
+            <div>
+              <input
+                ref={inputRef}
+                type="file"
+                accept=".glb"
+                multiple
+                hidden
+                onChange={(e) => handleUpload(e.target.files)}
+              />
+              <button
+                className="btn primary"
+                disabled={uploading}
+                onClick={() => inputRef.current?.click()}
+              >
+                {uploading ? 'Uploading…' : '+ Upload GLB'}
+              </button>
+            </div>
+          )}
         </div>
 
         {error && <div className="form-error">{error}</div>}
@@ -162,14 +161,20 @@ export default function MainMenu() {
           <div className="empty-state">
             <div className="empty-icon">📦</div>
             <h2>No models yet</h2>
-            <p className="muted">Upload your first GLB file to get started.</p>
-            <button
-              className="btn primary"
-              disabled={uploading}
-              onClick={() => inputRef.current?.click()}
-            >
-              {uploading ? 'Uploading…' : 'Upload a file'}
-            </button>
+            {canUpload ? (
+              <>
+                <p className="muted">Upload your first GLB file to get started.</p>
+                <button
+                  className="btn primary"
+                  disabled={uploading}
+                  onClick={() => inputRef.current?.click()}
+                >
+                  {uploading ? 'Uploading…' : 'Upload a file'}
+                </button>
+              </>
+            ) : (
+              <p className="muted">Your organization hasn't uploaded any models yet.</p>
+            )}
           </div>
         ) : (
           <table className="file-table">
@@ -222,7 +227,7 @@ export default function MainMenu() {
                     >
                       Download
                     </button>
-                    {file.uploaded_by === user?.username && (
+                    {canDelete(file) && (
                       <button
                         className="btn small danger"
                         onClick={() => handleDelete(file)}

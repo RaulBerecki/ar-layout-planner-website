@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api, getToken, getStoredUser, storeSession, clearSession } from './api';
 
 const AuthContext = createContext(null);
@@ -33,8 +33,32 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
+  // Reloads the signed-in user's role and permissions, which an administrator may have changed.
+  const refreshUser = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+    try {
+      const { user: fresh } = await api.me();
+      storeSession(token, fresh);
+      setUser(fresh);
+    } catch (err) {
+      if (/token|authenticated/i.test(err.message)) {
+        clearSession();
+        setUser(null);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshUser();
+  }, [refreshUser]);
+
+  // Organization-wide permissions (see server/permissions.js). The server enforces them too;
+  // this only decides which buttons to show.
+  const can = (permission) => Boolean(user?.permissions?.includes(permission));
+
   return (
-    <AuthContext.Provider value={{ user, login, register, enterApp, logout }}>
+    <AuthContext.Provider value={{ user, login, register, enterApp, logout, refreshUser, can }}>
       {children}
     </AuthContext.Provider>
   );
