@@ -226,122 +226,125 @@ export default function MainMenu() {
             )}
           </div>
         ) : (
-          <table className="file-table">
-            <thead>
-              <tr>
-                <th></th>
-                <th>Model</th>
-                <th>Category</th>
-                <th>Real size</th>
-                <th>File</th>
-                <th>Uploaded by</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {files.map((file) => (
-                <tr key={file.id}>
-                  <td className="thumb-cell">
-                    {file.thumbnail ? (
-                      <img
-                        className="thumb"
-                        src={file.thumbnail}
-                        alt=""
-                        title="Click to preview"
-                        onClick={() => setPreviewFile(file)}
-                      />
-                    ) : (
-                      <div
-                        className="thumb thumb-placeholder"
-                        title="Click to preview"
-                        onClick={() => setPreviewFile(file)}
-                      >
-                        ▦
-                      </div>
-                    )}
-                  </td>
-                  <td className="model-cell">
-                    <div className="file-name">{file.display_name || file.original_name}</div>
-                    {file.display_name && (
-                      <div className="muted model-filename">{file.original_name}</div>
-                    )}
-                    {file.ai_status === 'pending' && (
-                      <div className="muted ai-note">Analysing…</div>
-                    )}
-                    {file.ai_status === 'failed' && (
-                      <div className="ai-note ai-failed" title={file.ai_error}>
-                        Analysis failed
-                      </div>
-                    )}
-                    {file.description && <div className="muted model-desc">{file.description}</div>}
-                    {file.tags?.length > 0 && (
-                      <div className="tag-row">
-                        {file.tags.map((tag) => (
-                          <span key={tag} className="tag">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    {file.category ? (
-                      <span className="badge">{categoryLabel(file.category)}</span>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                    {file.ai_status === 'ready' && file.ai_confidence !== 'high' && (
-                      <div className="muted ai-note" title="How sure the AI was">
-                        AI · {file.ai_confidence} confidence
-                      </div>
-                    )}
-                  </td>
-                  <td className="nowrap">{formatSizeM(file) || <span className="muted">—</span>}</td>
-                  <td className="nowrap">{formatSize(file.size_bytes)}</td>
-                  <td className="nowrap">
-                    {file.uploaded_by}
-                    <div className="muted model-filename">{formatDate(file.uploaded_at)}</div>
-                  </td>
-                  <td className="row-actions">
-                    <button
-                      className="btn small primary"
-                      onClick={() => setPreviewFile(file)}
-                    >
-                      Preview
-                    </button>
-                    <button
-                      className="btn small"
-                      onClick={() => api.downloadFile(file.id)}
-                    >
-                      Download
-                    </button>
-                    {canUpload && (
-                      <button className="btn small" onClick={() => setEditing(file)}>
-                        Details
-                      </button>
-                    )}
-                    {canUpload && aiEnabled && file.thumbnail && file.ai_status !== 'pending' && (
-                      <button
-                        className="btn small"
-                        title="Let the AI suggest a name, category and tags for this model"
-                        onClick={() => describe(file)}
-                      >
-                        {file.ai_status === 'none' ? 'Describe with AI' : 'Re-run AI'}
-                      </button>
-                    )}
-                    {canDelete(file) && (
-                      <button
-                        className="btn small danger"
-                        onClick={() => handleDelete(file)}
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </td>
+          <div className="table-scroll">
+            <table className="file-table models-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Model</th>
+                  <th>Category</th>
+                  <th>Real size</th>
+                  <th>Uploaded</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {files.map((file) => (
+                  <tr key={file.id}>
+                    <td className="thumb-cell">
+                      {file.thumbnail ? (
+                        <img
+                          className="thumb"
+                          src={file.thumbnail}
+                          alt=""
+                          title="Click to preview"
+                          onClick={() => setPreviewFile(file)}
+                        />
+                      ) : (
+                        <div
+                          className="thumb thumb-placeholder"
+                          title="Click to preview"
+                          onClick={() => setPreviewFile(file)}
+                        >
+                          ▦
+                        </div>
+                      )}
+                    </td>
+                    <td className="model-cell">
+                      <div className="file-name">{file.display_name || file.original_name}</div>
+                      {file.display_name && (
+                        <div className="muted model-filename">{file.original_name}</div>
+                      )}
+                      {file.ai_status === 'pending' && (
+                        <div className="muted ai-note">Analysing…</div>
+                      )}
+                      {file.ai_status === 'failed' && (
+                        <div className="ai-note ai-failed" title={file.ai_error}>
+                          Analysis failed
+                        </div>
+                      )}
+                      {file.description && <div className="muted model-desc">{file.description}</div>}
+                      {file.tags?.length > 0 && (
+                        <div className="tag-row">
+                          {file.tags.map((tag) => (
+                            <span key={tag} className="tag">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      {file.category ? (
+                        <span className="badge">{categoryLabel(file.category)}</span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                      {file.ai_status === 'ready' && file.ai_confidence !== 'high' && (
+                        <div className="muted ai-note" title="How sure the AI was">
+                          AI · {file.ai_confidence} confidence
+                        </div>
+                      )}
+                    </td>
+                    <td className="nowrap">{formatSizeM(file) || <span className="muted">—</span>}</td>
+                    <td className="nowrap">
+                      {file.uploaded_by}
+                      <div className="muted model-filename">{formatDate(file.uploaded_at)}</div>
+                      <div className="muted model-filename">{formatSize(file.size_bytes)}</div>
+                    </td>
+                    <td className="row-actions wrap">
+                      <div className="action-group">
+                        <button
+                          className="btn small primary"
+                          onClick={() => setPreviewFile(file)}
+                        >
+                          Preview
+                        </button>
+                        <button
+                          className="btn small"
+                          onClick={() => api.downloadFile(file.id)}
+                        >
+                          Download
+                        </button>
+                        {canUpload && (
+                          <button className="btn small" onClick={() => setEditing(file)}>
+                            Details
+                          </button>
+                        )}
+                        {canUpload && aiEnabled && file.thumbnail && file.ai_status !== 'pending' && (
+                          <button
+                            className="btn small"
+                            title="Let the AI suggest a name, category and tags for this model"
+                            onClick={() => describe(file)}
+                          >
+                            {file.ai_status === 'none' ? 'Describe with AI' : 'Re-run AI'}
+                          </button>
+                        )}
+                        {canDelete(file) && (
+                          <button
+                            className="btn small danger"
+                            onClick={() => handleDelete(file)}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </main>
 

@@ -24,6 +24,30 @@ const PROVIDERS = { gemini, anthropic };
 // The answer is short; this is a ceiling, not an expected length.
 const MAX_TOKENS = 1000;
 
+// SDKs retry overloaded or rate-limited requests on their own, with growing pauses.
+// Without a ceiling a busy free tier can keep one request alive for minutes, leaving the
+// model stuck on "Analysing...". The timeout applies to each attempt, so the worst case
+// is about (MAX_RETRIES + 1) x TIMEOUT_MS, here roughly 90 s; after that the attempt is
+// recorded as failed and the person can retry.
+const TIMEOUT_MS = 45_000;
+const MAX_RETRIES = 1;
+
+// Provider errors carry an HTTP status; turn the common ones into something a person
+// can act on, instead of storing a raw JSON error body.
+function explainProviderError(err, providerName) {
+  const status = err?.status;
+  if (status === 401 || status === 403) return `The ${providerName} API key was rejected`;
+  if (status === 404) return `The configured ${providerName} model is not available to this key`;
+  if (status === 429) return `${providerName} rate limit reached; try again in a minute`;
+  if (status === 503 || status === 529) {
+    return `${providerName} is overloaded right now; try again later`;
+  }
+  if (/timed? ?out/i.test(err?.message || '') || err?.name?.includes('Timeout')) {
+    return `${providerName} did not answer in time; try again later`;
+  }
+  return err?.message || 'The AI request failed';
+}
+
 // A closed list keeps the data usable for filtering and for the layout rules that come
 // later: free-form categories would drift ("robot", "robotic arm", "Roboter"...).
 export const CATEGORIES = [
@@ -136,13 +160,21 @@ export async function describeModel({ filename, thumbnail, dimensions }) {
   const image = parseDataUrl(thumbnail);
   if (!image) throw new Error('This model has no usable preview image');
 
-  const { output, model, usage } = await provider.describe({
-    system: SYSTEM_PROMPT,
-    image,
-    text: `File name: ${filename}\n${describeSize(dimensions)}`,
-    schema: ModelMetadata,
-    maxTokens: MAX_TOKENS,
-  });
+  let result;
+  try {
+    result = await provider.describe({
+      system: SYSTEM_PROMPT,
+      image,
+      text: `File name: ${filename}\n${describeSize(dimensions)}`,
+      schema: ModelMetadata,
+      maxTokens: MAX_TOKENS,
+      timeoutMs: TIMEOUT_MS,
+      maxRetries: MAX_RETRIES,
+    });
+  } catch (err) {
+    throw new Error(explainProviderError(err, provider.name === 'gemini' ? 'Gemini' : 'Claude'));
+  }
+  const { output, model, usage } = result;
   if (!output) throw new Error('The model did not return a usable answer');
 
   return {

@@ -25,26 +25,29 @@ function toJsonSchema(schema) {
 }
 
 /** Same contract as the Anthropic implementation; see ai-providers/anthropic.js. */
-export async function describe({ system, image, text, schema, maxTokens }) {
+export async function describe({ system, image, text, schema, maxTokens, timeoutMs, maxRetries }) {
   const model = process.env.GEMINI_MODEL || defaultModel;
-  const interaction = await getClient().interactions.create({
-    model,
-    system_instruction: system,
-    input: [
-      { type: 'image', data: image.data, mime_type: image.mediaType },
-      { type: 'text', text },
-    ],
-    response_format: {
-      type: 'text',
-      mime_type: 'application/json',
-      schema: toJsonSchema(schema),
+  const interaction = await getClient().interactions.create(
+    {
+      model,
+      system_instruction: system,
+      input: [
+        { type: 'image', data: image.data, mime_type: image.mediaType },
+        { type: 'text', text },
+      ],
+      response_format: {
+        type: 'text',
+        mime_type: 'application/json',
+        schema: toJsonSchema(schema),
+      },
+      generation_config: {
+        // Same reasoning as Claude's effort setting: a short, concrete judgement.
+        thinking_level: 'low',
+        max_output_tokens: maxTokens,
+      },
     },
-    generation_config: {
-      // Same reasoning as Claude's effort setting: a short, concrete judgement.
-      thinking_level: 'low',
-      max_output_tokens: maxTokens,
-    },
-  });
+    { timeout: timeoutMs, maxRetries }
+  );
 
   if (!interaction.output_text) throw new Error('The model returned no answer');
   let parsed;

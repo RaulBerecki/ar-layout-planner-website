@@ -525,7 +525,15 @@ body {
 /* ---------- Model catalogue ---------- */
 
 .model-cell {
+  min-width: 12rem;
   max-width: 24rem;
+}
+
+/* Generated names are words, so they wrap between words; only the raw file name
+   below them may break anywhere. */
+.model-cell .file-name {
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 .model-filename {
@@ -568,6 +576,21 @@ body {
 
 .nowrap {
   white-space: nowrap;
+}
+
+/* Many actions per row: let them wrap inside the cell instead of widening the table */
+td.row-actions.wrap {
+  white-space: normal;
+  min-width: 11.5rem; /* room for two small buttons per row */
+}
+
+.action-group {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  max-width: 13rem;
+  margin-left: auto;
 }
 
 .details-modal {

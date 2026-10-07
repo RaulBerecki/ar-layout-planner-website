@@ -1054,6 +1054,15 @@ app.use((err, req, res, next) => {
 });
 
 initDb()
+  // An analysis runs inside this process, so after a restart nothing will ever finish one
+  // that was in progress. Mark those as failed so the page stops waiting and offers a
+  // retry. (Assumes a single server instance, which is how this app is deployed.)
+  .then(() =>
+    pool.query(
+      `UPDATE files SET ai_status = 'failed', ai_error = 'Interrupted by a server restart; try again'
+       WHERE ai_status = 'pending'`
+    )
+  )
   .then(() => {
     app.listen(PORT, () => {
       console.log(`API server listening on http://localhost:${PORT}`);
