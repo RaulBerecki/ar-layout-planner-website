@@ -60,12 +60,19 @@ export const api = {
   me: () => request('/api/me'),
   getOrg: () => request('/api/org'),
   listFiles: () => request('/api/files'),
-  uploadFile: (file, thumbnail) => {
+  uploadFile: (file, { thumbnail, dimensions } = {}) => {
     const form = new FormData();
     form.append('file', file);
     if (thumbnail) form.append('thumbnail', thumbnail);
+    if (dimensions) form.append('dimensions', JSON.stringify(dimensions));
     return request('/api/files', { method: 'POST', body: form });
   },
+  listCategories: () => request('/api/model-categories'),
+  // Asks the server to (re)generate the AI catalogue entry; returns as soon as the work
+  // is queued, the result arrives through the file list.
+  describeFile: (id) => request(`/api/files/${id}/describe`, { method: 'POST' }),
+  updateFileDetails: (id, details) =>
+    request(`/api/files/${id}`, { method: 'PATCH', body: details }),
   setThumbnail: (id, thumbnail) =>
     request(`/api/files/${id}/thumbnail`, { method: 'POST', body: { thumbnail } }),
   deleteFile: (id) => request(`/api/files/${id}`, { method: 'DELETE' }),

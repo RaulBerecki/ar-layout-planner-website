@@ -66,6 +66,18 @@ Then open the URL Vite prints, register an account, and start uploading
 `POST /api/register` body: `{ username, password, orgMode: "create" | "join",
 orgName?, inviteCode? }`.
 
+## AI model metadata
+
+Uploaded models are catalogued automatically: the browser renders a thumbnail and
+measures the model's real size from its geometry, the server sends both to Claude, and
+the reply — a readable name, one category from a fixed list, tags and a one-sentence
+description — is stored alongside the file. Anyone who may upload models can correct the
+suggestion under **Details**, and re-run it with **Re-run AI**.
+
+Set `ANTHROPIC_API_KEY` to enable it; without the key the application runs as before and
+the AI buttons are hidden. Design, concepts and evaluation ideas:
+[docs/ai-model-metadata.md](docs/ai-model-metadata.md).
+
 ## Forgotten passwords
 
 Accounts have no email address, so password reset uses a **recovery code**

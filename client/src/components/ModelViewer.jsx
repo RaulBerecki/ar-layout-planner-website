@@ -122,11 +122,11 @@ export default function ModelViewer({ file, onClose, onThumbnail }) {
 
             // Backfill: files uploaded before thumbnails existed get one now
             if (!file.thumbnail && onThumbnail) {
-              generateThumbnail(buffer).then((thumb) => {
-                if (!thumb || disposed) return;
+              generateThumbnail(buffer).then(({ thumbnail }) => {
+                if (!thumbnail || disposed) return;
                 api
-                  .setThumbnail(file.id, thumb)
-                  .then(() => onThumbnail(file.id, thumb))
+                  .setThumbnail(file.id, thumbnail)
+                  .then(() => onThumbnail(file.id, thumbnail))
                   .catch(() => {});
               });
             }

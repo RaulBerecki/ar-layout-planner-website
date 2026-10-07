@@ -23,6 +23,7 @@ import {
   normalizeRecoveryCode,
 } from './db.js';
 import { PERMISSIONS, PERMISSION_KEYS, LINE_PERMISSION_KEYS } from './permissions.js';
+import { describeModel, isEnabled as aiEnabled, CATEGORIES, CATEGORY_LABELS } from './ai.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -363,9 +364,80 @@ const upload = multer({
 
 const FILE_SELECT = `
   SELECT f.id, f.original_name, f.size_bytes::int AS size_bytes, f.uploaded_at,
-         f.thumbnail, u.username AS uploaded_by
+         f.thumbnail, f.display_name, f.category, f.tags, f.description,
+         f.width_m, f.depth_m, f.height_m,
+         f.ai_status, f.ai_confidence, f.ai_model, f.ai_error,
+         u.username AS uploaded_by
   FROM files f JOIN users u ON u.id = f.user_id
 `;
+
+// What the catalogue accepts, so the page offers exactly the choices the model has.
+app.get('/api/model-categories', requireAuth, (req, res) => {
+  res.json({
+    categories: CATEGORIES.map((key) => ({ key, label: CATEGORY_LABELS[key] })),
+    ai_enabled: aiEnabled(),
+  });
+});
+
+// Measured in the browser from the model's bounding box before upload.
+function parseDimensions(raw) {
+  if (!raw) return null;
+  let value = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  const nums = ['width_m', 'depth_m', 'height_m'].map((k) => Number(value?.[k]));
+  // Outside this range it is a broken export or the wrong unit, not a machine.
+  if (!nums.every((n) => Number.isFinite(n) && n > 0 && n < 1000)) return null;
+  return { width_m: nums[0], depth_m: nums[1], height_m: nums[2] };
+}
+
+// Generates the catalogue entry and stores it. Never throws: a failure is recorded on the
+// row so the page can show it and offer a retry, while the uploaded model stays usable.
+async function generateMetadata(fileId) {
+  const { rows } = await pool.query(
+    'SELECT original_name, thumbnail, width_m, depth_m, height_m FROM files WHERE id = $1',
+    [fileId]
+  );
+  const file = rows[0];
+  if (!file) return;
+  try {
+    const { metadata, model } = await describeModel({
+      filename: file.original_name,
+      thumbnail: file.thumbnail,
+      dimensions:
+        file.width_m == null
+          ? null
+          : { width_m: file.width_m, depth_m: file.depth_m, height_m: file.height_m },
+    });
+    await pool.query(
+      `UPDATE files SET display_name = $1, category = $2, tags = $3::jsonb, description = $4,
+              ai_status = 'ready', ai_confidence = $5, ai_model = $6, ai_error = NULL,
+              ai_generated_at = now()
+       WHERE id = $7`,
+      [
+        metadata.display_name,
+        metadata.category,
+        JSON.stringify(metadata.tags),
+        metadata.description,
+        metadata.confidence,
+        model,
+        fileId,
+      ]
+    );
+  } catch (err) {
+    console.error(`AI metadata failed for file ${fileId}: ${err.message}`);
+    await pool.query(
+      `UPDATE files SET ai_status = 'failed', ai_error = $1, ai_generated_at = now()
+       WHERE id = $2`,
+      [err.message, fileId]
+    );
+  }
+}
 
 app.get('/api/files', requireAuth, async (req, res, next) => {
   try {
@@ -394,15 +466,32 @@ app.post('/api/files', requireAuth, requirePermission('models.upload'), (req, re
       }
 
       const thumbnail = validThumbnail(req.body?.thumbnail) ? req.body.thumbnail : null;
+      const dims = parseDimensions(req.body?.dimensions);
+      // 'pending' only when something can actually run, so the page never waits forever.
+      const aiStatus = aiEnabled() && thumbnail ? 'pending' : 'none';
       const { rows } = await pool.query(
-        `INSERT INTO files (user_id, org_id, original_name, storage_path, size_bytes, thumbnail)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [req.user.id, req.user.org_id, req.file.originalname, storagePath, req.file.size, thumbnail]
+        `INSERT INTO files (user_id, org_id, original_name, storage_path, size_bytes, thumbnail,
+                            width_m, depth_m, height_m, ai_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+        [
+          req.user.id,
+          req.user.org_id,
+          req.file.originalname,
+          storagePath,
+          req.file.size,
+          thumbnail,
+          dims?.width_m ?? null,
+          dims?.depth_m ?? null,
+          dims?.height_m ?? null,
+          aiStatus,
+        ]
       );
-      const { rows: fileRows } = await pool.query(`${FILE_SELECT} WHERE f.id = $1`, [
-        rows[0].id,
-      ]);
+      const fileId = rows[0].id;
+      const { rows: fileRows } = await pool.query(`${FILE_SELECT} WHERE f.id = $1`, [fileId]);
+      // Answer first: the upload must not wait for Claude. The page shows the model as
+      // "Analysing..." and picks up the result when it polls.
       res.status(201).json({ file: fileRows[0] });
+      if (aiStatus === 'pending') generateMetadata(fileId);
     } catch (e) {
       next(e);
     }
@@ -441,6 +530,76 @@ app.get('/api/files/:id/url', requireAuth, async (req, res, next) => {
     next(err);
   }
 });
+
+// Runs (or re-runs) the AI catalogue entry for one model. Also covers models uploaded
+// before this feature existed, and retries after a failure.
+app.post(
+  '/api/files/:id/describe',
+  requireAuth,
+  requirePermission('models.upload'),
+  async (req, res, next) => {
+    try {
+      const file = await getOrgFile(req, res);
+      if (!file) return;
+      if (!aiEnabled()) {
+        return res.status(503).json({ error: 'AI metadata is not configured on this server' });
+      }
+      if (!file.thumbnail) {
+        return res.status(400).json({ error: 'This model has no preview image to analyse' });
+      }
+      if (file.ai_status === 'pending') {
+        return res.status(409).json({ error: 'This model is already being analysed' });
+      }
+      await pool.query("UPDATE files SET ai_status = 'pending', ai_error = NULL WHERE id = $1", [
+        file.id,
+      ]);
+      res.status(202).json({ ok: true, status: 'pending' });
+      generateMetadata(file.id);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// A person correcting the AI's suggestion. Their version wins: ai_status becomes
+// 'edited', so a later bulk re-run can skip what a human already approved.
+app.patch(
+  '/api/files/:id',
+  requireAuth,
+  requirePermission('models.upload'),
+  async (req, res, next) => {
+    try {
+      const file = await getOrgFile(req, res);
+      if (!file) return;
+      const { display_name, category, tags, description } = req.body || {};
+
+      const name = typeof display_name === 'string' ? display_name.trim() : null;
+      if (!name) return res.status(400).json({ error: 'A name is required' });
+      if (name.length > 120) return res.status(400).json({ error: 'The name is too long' });
+      if (category != null && !CATEGORIES.includes(category)) {
+        return res.status(400).json({ error: 'Unknown category' });
+      }
+      if (tags != null && !Array.isArray(tags)) {
+        return res.status(400).json({ error: 'Tags must be a list' });
+      }
+      const cleanTags = [
+        ...new Set((tags || []).map((t) => String(t).trim().toLowerCase()).filter(Boolean)),
+      ].slice(0, 8);
+      const text = typeof description === 'string' ? description.trim().slice(0, 500) : null;
+
+      const { rows } = await pool.query(
+        `UPDATE files SET display_name = $1, category = $2, tags = $3::jsonb, description = $4,
+                ai_status = 'edited'
+         WHERE id = $5 RETURNING id`,
+        [name, category ?? null, JSON.stringify(cleanTags), text, file.id]
+      );
+      const { rows: fileRows } = await pool.query(`${FILE_SELECT} WHERE f.id = $1`, [rows[0].id]);
+      res.json({ file: fileRows[0] });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // Backfill: lets the viewer save a thumbnail for files uploaded before
 // thumbnails existed (any member of the owning organization).

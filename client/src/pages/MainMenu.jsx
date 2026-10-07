@@ -4,11 +4,18 @@ import { api } from '../api';
 import ModelViewer from '../components/ModelViewer';
 import AppHeader from '../components/AppHeader';
 import { generateThumbnail } from '../utils/thumbnail';
+import ModelDetailsDialog from '../components/ModelDetailsDialog';
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatSizeM(file) {
+  if (file.width_m == null) return null;
+  const fmt = (n) => (n < 1 ? `${Math.round(n * 100)} cm` : `${n.toFixed(2)} m`);
+  return `${fmt(file.width_m)} × ${fmt(file.depth_m)} × ${fmt(file.height_m)}`;
 }
 
 function formatDate(dateStr) {
@@ -30,6 +37,9 @@ export default function MainMenu() {
   const [previewFile, setPreviewFile] = useState(null);
   const [org, setOrg] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [categories, setCategories] = useState([]);
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [editing, setEditing] = useState(null); // model whose details are open for editing
   const inputRef = useRef(null);
 
   const loadFiles = async () => {
@@ -51,8 +61,45 @@ export default function MainMenu() {
   useEffect(() => {
     loadFiles();
     api.getOrg().then((data) => setOrg(data.organization)).catch(() => {});
+    api
+      .listCategories()
+      .then((data) => {
+        setCategories(data.categories);
+        setAiEnabled(data.ai_enabled);
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // While a model is being analysed, ask the server again every few seconds until it is
+  // done. Cheaper and simpler than a websocket for something that takes a few seconds.
+  const analysing = files.some((f) => f.ai_status === 'pending');
+  useEffect(() => {
+    if (!analysing) return undefined;
+    const timer = setInterval(loadFiles, 3000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysing]);
+
+  const describe = async (file) => {
+    setFiles((current) =>
+      current.map((f) => (f.id === file.id ? { ...f, ai_status: 'pending' } : f))
+    );
+    try {
+      await api.describeFile(file.id);
+    } catch (err) {
+      setError(err.message);
+      await loadFiles();
+    }
+  };
+
+  const saveDetails = async (details) => {
+    const { file } = await api.updateFileDetails(editing.id, details);
+    setFiles((current) => current.map((f) => (f.id === file.id ? file : f)));
+    setEditing(null);
+  };
+
+  const categoryLabel = (key) => categories.find((c) => c.key === key)?.label || key;
 
   const copyInvite = async () => {
     try {
@@ -71,13 +118,15 @@ export default function MainMenu() {
     setError('');
     try {
       for (const file of selected) {
-        let thumbnail = null;
+        // Both are optional: a model that fails to render still uploads, it just has
+        // no preview and no AI catalogue entry.
+        let rendered = {};
         try {
-          thumbnail = await generateThumbnail(await file.arrayBuffer());
+          rendered = await generateThumbnail(await file.arrayBuffer());
         } catch {
-          // thumbnail is optional — upload proceeds without one
+          // ignored on purpose
         }
-        await api.uploadFile(file, thumbnail);
+        await api.uploadFile(file, rendered);
       }
       await loadFiles();
     } catch (err) {
@@ -181,10 +230,11 @@ export default function MainMenu() {
             <thead>
               <tr>
                 <th></th>
-                <th>Name</th>
-                <th>Size</th>
+                <th>Model</th>
+                <th>Category</th>
+                <th>Real size</th>
+                <th>File</th>
                 <th>Uploaded by</th>
-                <th>Uploaded at</th>
                 <th></th>
               </tr>
             </thead>
@@ -210,10 +260,48 @@ export default function MainMenu() {
                       </div>
                     )}
                   </td>
-                  <td className="file-name">{file.original_name}</td>
-                  <td>{formatSize(file.size_bytes)}</td>
-                  <td>{file.uploaded_by}</td>
-                  <td>{formatDate(file.uploaded_at)}</td>
+                  <td className="model-cell">
+                    <div className="file-name">{file.display_name || file.original_name}</div>
+                    {file.display_name && (
+                      <div className="muted model-filename">{file.original_name}</div>
+                    )}
+                    {file.ai_status === 'pending' && (
+                      <div className="muted ai-note">Analysing…</div>
+                    )}
+                    {file.ai_status === 'failed' && (
+                      <div className="ai-note ai-failed" title={file.ai_error}>
+                        Analysis failed
+                      </div>
+                    )}
+                    {file.description && <div className="muted model-desc">{file.description}</div>}
+                    {file.tags?.length > 0 && (
+                      <div className="tag-row">
+                        {file.tags.map((tag) => (
+                          <span key={tag} className="tag">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    {file.category ? (
+                      <span className="badge">{categoryLabel(file.category)}</span>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                    {file.ai_status === 'ready' && file.ai_confidence !== 'high' && (
+                      <div className="muted ai-note" title="How sure the AI was">
+                        AI · {file.ai_confidence} confidence
+                      </div>
+                    )}
+                  </td>
+                  <td className="nowrap">{formatSizeM(file) || <span className="muted">—</span>}</td>
+                  <td className="nowrap">{formatSize(file.size_bytes)}</td>
+                  <td className="nowrap">
+                    {file.uploaded_by}
+                    <div className="muted model-filename">{formatDate(file.uploaded_at)}</div>
+                  </td>
                   <td className="row-actions">
                     <button
                       className="btn small primary"
@@ -227,6 +315,20 @@ export default function MainMenu() {
                     >
                       Download
                     </button>
+                    {canUpload && (
+                      <button className="btn small" onClick={() => setEditing(file)}>
+                        Details
+                      </button>
+                    )}
+                    {canUpload && aiEnabled && file.thumbnail && file.ai_status !== 'pending' && (
+                      <button
+                        className="btn small"
+                        title="Let the AI suggest a name, category and tags for this model"
+                        onClick={() => describe(file)}
+                      >
+                        {file.ai_status === 'none' ? 'Describe with AI' : 'Re-run AI'}
+                      </button>
+                    )}
                     {canDelete(file) && (
                       <button
                         className="btn small danger"
@@ -242,6 +344,15 @@ export default function MainMenu() {
           </table>
         )}
       </main>
+
+      {editing && (
+        <ModelDetailsDialog
+          file={editing}
+          categories={categories}
+          onSave={saveDetails}
+          onClose={() => setEditing(null)}
+        />
+      )}
 
       {previewFile && (
         <ModelViewer

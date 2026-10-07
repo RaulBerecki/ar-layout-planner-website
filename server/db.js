@@ -60,6 +60,22 @@ export const SCHEMA_SQL = `
     ALTER TABLE files ADD COLUMN IF NOT EXISTS thumbnail TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_code_hash TEXT;
 
+    -- Catalogue data for a model: measured from the file (width/depth/height) or
+    -- suggested by Claude from the preview image (the rest). ai_status says where the
+    -- suggestion stands: pending, ready, failed, or edited by a person.
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS display_name TEXT;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS category TEXT;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS width_m REAL;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS depth_m REAL;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS height_m REAL;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS ai_status TEXT NOT NULL DEFAULT 'none';
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS ai_confidence TEXT;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS ai_model TEXT;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS ai_error TEXT;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS ai_generated_at TIMESTAMPTZ;
+
     -- Roles: custom per organization, each a set of permission keys (see permissions.js)
     CREATE TABLE IF NOT EXISTS roles (
       id SERIAL PRIMARY KEY,

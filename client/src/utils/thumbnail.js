@@ -2,9 +2,14 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 /**
- * Renders a GLB (ArrayBuffer) once into a small offscreen canvas and returns
- * a compact data-URL image, or null if anything fails. Uses the same framing
+ * Renders a GLB (ArrayBuffer) once into a small offscreen canvas. Uses the same framing
  * and lighting as the full ModelViewer so thumbnails match the preview.
+ *
+ * Resolves { thumbnail, dimensions }:
+ *   thumbnail  - compact data-URL image, or null if rendering failed
+ *   dimensions - the model's real size in metres, measured from its bounding box
+ *                (glTF files are defined in metres), or null if it could not be read.
+ *                Measured here rather than asked of the AI, because geometry is exact.
  */
 export function generateThumbnail(buffer, size = 256) {
   return new Promise((resolve) => {
@@ -24,9 +29,9 @@ export function generateThumbnail(buffer, size = 256) {
       dirLight.position.set(5, 10, 7);
       scene.add(dirLight);
 
-      const finish = (dataUrl) => {
+      const finish = (thumbnail, dimensions = null) => {
         renderer.dispose();
-        resolve(dataUrl);
+        resolve({ thumbnail, dimensions });
       };
 
       new GLTFLoader().parse(
@@ -39,6 +44,13 @@ export function generateThumbnail(buffer, size = 256) {
             const center = box.getCenter(new THREE.Vector3());
             const size3 = box.getSize(new THREE.Vector3());
             const maxDim = Math.max(size3.x, size3.y, size3.z) || 1;
+            // Y is up in glTF, so width/depth are the floor footprint and height is Y
+            const round = (n) => Math.round(n * 1000) / 1000;
+            const dimensions = [size3.x, size3.z, size3.y].every(
+              (n) => Number.isFinite(n) && n > 0
+            )
+              ? { width_m: round(size3.x), depth_m: round(size3.z), height_m: round(size3.y) }
+              : null;
             model.position.sub(center);
             scene.add(model);
 
@@ -54,7 +66,7 @@ export function generateThumbnail(buffer, size = 256) {
             if (dataUrl.length > 150_000) {
               dataUrl = renderer.domElement.toDataURL('image/jpeg', 0.7);
             }
-            finish(dataUrl.length <= 200_000 ? dataUrl : null);
+            finish(dataUrl.length <= 200_000 ? dataUrl : null, dimensions);
           } catch {
             finish(null);
           }
