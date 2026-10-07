@@ -74,8 +74,9 @@ the reply — a readable name, one category from a fixed list, tags and a one-se
 description — is stored alongside the file. Anyone who may upload models can correct the
 suggestion under **Details**, and re-run it with **Re-run AI**.
 
-Set `ANTHROPIC_API_KEY` to enable it; without the key the application runs as before and
-the AI buttons are hidden. Design, concepts and evaluation ideas:
+Works with Google Gemini or Anthropic Claude: set `GEMINI_API_KEY` or
+`ANTHROPIC_API_KEY` (and `AI_PROVIDER` if both are set). Without a key the application
+runs as before and the AI buttons are hidden. Design, concepts and evaluation ideas:
 [docs/ai-model-metadata.md](docs/ai-model-metadata.md).
 
 ## Forgotten passwords

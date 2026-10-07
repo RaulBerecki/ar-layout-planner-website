@@ -1,27 +1,28 @@
 // Automatic metadata for uploaded 3D models.
 //
 // A GLB file arrives with a name like "038_Giraffaxon_Art.glb", which tells a planner
-// nothing. We send Claude two things the browser already produced at upload time — the
-// thumbnail image and the model's real size from its bounding box — and ask for a short
-// catalogue entry: a readable name, one category from a fixed list, a few tags and one
-// sentence of description.
+// nothing. We send a vision model two things the browser already produced at upload
+// time — the thumbnail image and the model's real size from its bounding box — and ask
+// for a short catalogue entry: a readable name, one category from a fixed list, a few
+// tags and one sentence of description.
 //
-// Two design choices worth noting:
+// Design choices worth noting:
 //
-//   * The answer is a *structured output*: we hand the API a schema (below) and the model
-//     is constrained to produce JSON matching it, so the server never parses free text.
+//   * The answer is a *structured output*: the API receives a schema (below) and must
+//     produce JSON matching it, so the server never parses free text.
 //   * Measurements are NOT asked of the model. Sizes come from the geometry itself, which
 //     is exact; the model only judges what the object *is*, which is what vision is for.
-import Anthropic from '@anthropic-ai/sdk';
+//   * The provider is interchangeable. Everything that defines the task — prompt, schema,
+//     categories, validation — lives here and is shared, so switching between Gemini and
+//     Claude changes which model answers, not the question it is asked.
 import { z } from 'zod';
-import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
+import * as anthropic from './ai-providers/anthropic.js';
+import * as gemini from './ai-providers/gemini.js';
 
-// One Claude request per model is enough, and the answer is short.
+const PROVIDERS = { gemini, anthropic };
+
+// The answer is short; this is a ceiling, not an expected length.
 const MAX_TOKENS = 1000;
-
-// Default is Anthropic's current flagship; override per deployment, e.g. a cheaper model
-// for bulk imports, without touching the code.
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-5-5';
 
 // A closed list keeps the data usable for filtering and for the layout rules that come
 // later: free-form categories would drift ("robot", "robotic arm", "Roboter"...).
@@ -83,12 +84,25 @@ Rules:
 - If the preview is unclear or the object is not factory equipment, pick the closest
   category (or "other"), describe what you actually see, and set confidence to "low".`;
 
-export function isEnabled() {
-  return Boolean(process.env.ANTHROPIC_API_KEY);
+/**
+ * The provider in use: AI_PROVIDER when set, otherwise the first one with an API key.
+ * Returns null when none is configured, which switches the feature off.
+ */
+export function activeProvider() {
+  const requested = process.env.AI_PROVIDER?.trim().toLowerCase();
+  if (requested) {
+    const provider = PROVIDERS[requested];
+    return provider?.isConfigured() ? provider : null;
+  }
+  return Object.values(PROVIDERS).find((p) => p.isConfigured()) ?? null;
 }
 
-// Thumbnails are stored as data URLs ("data:image/webp;base64,AAAA..."), while the API
-// wants the media type and the payload separately.
+export function isEnabled() {
+  return activeProvider() !== null;
+}
+
+// Thumbnails are stored as data URLs ("data:image/webp;base64,AAAA..."), while the APIs
+// want the media type and the payload separately.
 function parseDataUrl(dataUrl) {
   const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(
     dataUrl || ''
@@ -107,72 +121,41 @@ function describeSize(dimensions) {
   return `Real size (width x depth x height): ${fmt(w)} x ${fmt(d)} x ${fmt(h)}.`;
 }
 
-let client;
-function getClient() {
-  // Constructed lazily so the server still starts when the key is absent.
-  if (!client) client = new Anthropic();
-  return client;
-}
-
 /**
- * Asks Claude to describe one model.
+ * Asks the configured model to describe one 3D model.
  *
- * @returns {Promise<{metadata: object, model: string, usage: object}>}
+ * @returns {Promise<{metadata: object, model: string, provider: string, usage: object}>}
  * @throws if the feature is disabled, the thumbnail is unusable, the request is
- *         declined, or the API call fails. Callers treat every failure the same way:
- *         the upload itself stays valid, only the extra metadata is missing.
+ *         declined, the answer does not match the schema, or the API call fails.
+ *         Callers treat every failure the same way: the upload itself stays valid,
+ *         only the extra metadata is missing.
  */
 export async function describeModel({ filename, thumbnail, dimensions }) {
-  if (!isEnabled()) throw new Error('AI metadata is disabled (ANTHROPIC_API_KEY is not set)');
+  const provider = activeProvider();
+  if (!provider) throw new Error('AI metadata is disabled (no AI provider API key is set)');
   const image = parseDataUrl(thumbnail);
   if (!image) throw new Error('This model has no usable preview image');
 
-  const response = await getClient().messages.parse({
-    model: MODEL,
-    max_tokens: MAX_TOKENS,
+  const { output, model, usage } = await provider.describe({
     system: SYSTEM_PROMPT,
-    // Naming the object is a short, concrete judgement, so the cheapest reasoning
-    // setting is enough; raising it costs tokens without changing the answer.
-    output_config: {
-      effort: 'low',
-      format: zodOutputFormat(ModelMetadata),
-    },
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: image.mediaType, data: image.data },
-          },
-          {
-            type: 'text',
-            text: `File name: ${filename}\n${describeSize(dimensions)}`,
-          },
-        ],
-      },
-    ],
+    image,
+    text: `File name: ${filename}\n${describeSize(dimensions)}`,
+    schema: ModelMetadata,
+    maxTokens: MAX_TOKENS,
   });
-
-  if (response.stop_reason === 'refusal') {
-    throw new Error('The request was declined by the model');
-  }
-  const metadata = response.parsed_output;
-  if (!metadata) throw new Error('The model did not return a usable answer');
+  if (!output) throw new Error('The model did not return a usable answer');
 
   return {
     metadata: {
-      ...metadata,
+      ...output,
       // Keep the catalogue tidy: lowercase, de-duplicated, at most six tags.
-      tags: [...new Set(metadata.tags.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(
+      tags: [...new Set(output.tags.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(
         0,
         6
       ),
     },
-    model: response.model,
-    usage: {
-      input_tokens: response.usage.input_tokens,
-      output_tokens: response.usage.output_tokens,
-    },
+    model,
+    provider: provider.name,
+    usage,
   };
 }

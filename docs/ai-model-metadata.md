@@ -137,7 +137,10 @@ a few hundred tokens, plus a short prompt) and under 150 output tokens. At Claud
 rates ($4 per million input, $20 per million output) that is well under one cent per
 model — a few cents for a library of a hundred. Latency is a few seconds, which the
 background job hides. `ANTHROPIC_MODEL` can point at a cheaper model (for example
-`claude-haiku-4-5`) for bulk imports without touching the code.
+`claude-haiku-4-5`) for bulk imports without touching the code. With Gemini on the free
+tier of Google AI Studio the cost is zero, within per-minute and per-day request limits
+— comfortably enough for a library of this size, as long as models are described one at
+a time, which is how the upload flow already works.
 
 ## 6. How this could be evaluated (for the thesis)
 
@@ -166,12 +169,44 @@ The honest way to claim the feature works is to measure it:
 - The uploader's thumbnail, not the GLB, is what the model sees. A model that fails to
   render gets no description at all.
 
-## 8. Configuration
+## 8. Interchangeable providers
+
+The task is defined once, in [`server/ai.js`](../server/ai.js): system prompt, Zod
+schema, category list, input preparation and post-processing. Each provider is a small
+adapter in [`server/ai-providers/`](../server/ai-providers/) exposing the same
+`describe()` contract — take the prompt, image, text and schema, return validated output,
+model name and token usage — so the rest of the application never knows which one
+answered.
+
+| | Claude (`anthropic.js`) | Gemini (`gemini.js`) |
+| --- | --- | --- |
+| SDK call | `client.messages.parse()` | `client.interactions.create()` |
+| Image block | `{type: 'image', source: {type: 'base64', ...}}` | `{type: 'image', data, mime_type}` |
+| Structured output | `output_config.format: zodOutputFormat(schema)` | `response_format: {mime_type: 'application/json', schema: z.toJSONSchema(schema)}` |
+| Reasoning depth | `output_config.effort: 'low'` | `generation_config.thinking_level: 'low'` |
+| Validation | done by the SDK (`parsed_output`) | done in the adapter (`schema.safeParse`) |
+
+Both paths end in the same Zod validation, so a comparison between providers changes
+exactly one variable — the model — while the question, the allowed answers and the
+acceptance check stay identical. That is what makes a side-by-side evaluation (section
+6) fair.
+
+## 9. Configuration
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...        # required; without it the feature stays off
-ANTHROPIC_MODEL=claude-opus-5-5     # optional override
+# at least one key; the feature is off without any
+GEMINI_API_KEY=...            # from Google AI Studio, free tier available
+ANTHROPIC_API_KEY=...         # from platform.claude.com
+
+# optional
+AI_PROVIDER=gemini            # which one to use when both keys are set
+GEMINI_MODEL=gemini-3.8-flash
+ANTHROPIC_MODEL=claude-opus-5-5
 ```
 
-Without the key the application behaves exactly as before: uploads work, previews work,
+When `AI_PROVIDER` names a provider whose key is missing, the feature turns off rather
+than silently falling back to the other one — a comparison run must never mix providers
+without anyone noticing.
+
+Without any key the application behaves exactly as before: uploads work, previews work,
 and the AI buttons do not appear.
